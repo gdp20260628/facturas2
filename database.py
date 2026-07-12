@@ -433,3 +433,69 @@ def obtener_siguiente_numero_factura():
     """Alias de compatibilidad con versiones anteriores."""
 
     return obtener_siguiente_factura()
+
+def obtener_factura_por_codigo(codigo_busqueda):
+    """Busca una factura por su número (nro_factura) y devuelve su estructura completa.
+
+    Retorna:
+        dict: Datos de la factura y DataFrame de detalles si existe, o None si no se encuentra.
+    """
+    codigo_busqueda = str(codigo_busqueda).strip()
+
+    if not codigo_busqueda:
+        return None
+
+    # 1. Consultar la cabecera del pedido
+    consulta_cabecera = text("""
+        SELECT 
+            nro_factura,
+            fecha,
+            cliente,
+            ruc_dni,
+            subtotal::DOUBLE PRECISION AS subtotal,
+            iva::DOUBLE PRECISION AS iva,
+            total::DOUBLE PRECISION AS total
+        FROM public.st_pedidos
+        WHERE LOWER(nro_factura) = LOWER(:codigo)
+        LIMIT 1
+    """)
+
+    # 2. Consultar el detalle asociado a esa factura
+    consulta_detalle = text("""
+        SELECT 
+            producto AS "Producto",
+            precio_unitario::DOUBLE PRECISION AS "Precio Unitario",
+            cantidad AS "Cantidad",
+            total::DOUBLE PRECISION AS "Total"
+        FROM public.st_detalle_pedidos
+        WHERE LOWER(nro_factura) = LOWER(:codigo)
+        ORDER BY id ASC
+    """)
+
+    try:
+        with engine.connect() as conn:
+            # Ejecutar búsqueda de cabecera
+            resultado_cabecera = conn.execute(consulta_cabecera, {"codigo": codigo_busqueda}).mappings().first()
+            
+            if not resultado_cabecera:
+                return None  # No se encontró la factura
+
+            # Cargar el detalle directamente en un DataFrame de Pandas
+            df_detalle = pd.read_sql_query(consulta_detalle, conn, params={"codigo": codigo_busqueda})
+
+        # Construir el diccionario con la estructura exacta que pide app.py
+        return {
+            "nro_factura": resultado_cabecera["nro_factura"],
+            "fecha": resultado_cabecera["fecha"],
+            "cliente": resultado_cabecera["cliente"],
+            "ruc_dni": resultado_cabecera["ruc_dni"],
+            "subtotal": resultado_cabecera["subtotal"],
+            "iva": resultado_cabecera["iva"],
+            "total": resultado_cabecera["total"],
+            "df_detalle": df_detalle
+        }
+
+    except Exception as exc:
+        # Relanzamos la excepción para que sea capturada por el st.error de la interfaz
+        raise RuntimeError(f"Error al consultar la factura en la base de datos: {exc}")
+
